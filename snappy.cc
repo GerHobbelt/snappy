@@ -801,6 +801,8 @@ size_t Compress(Source* reader, Sink* writer) {
 // IOVec interfaces
 // -----------------------------------------------------------------------
 
+#ifdef HAVE_IOVEC
+
 // A type that writes to an iovec.
 // Note that this is not a "ByteSink", but a type that matches the
 // Writer template argument to SnappyDecompressor::DecompressAllTags().
@@ -974,6 +976,8 @@ bool RawUncompressToIOVec(Source* compressed, const struct iovec* iov,
   SnappyIOVecWriter output(iov, iov_cnt);
   return InternalUncompress(compressed, &output);
 }
+
+#endif  // HAVE_IOVEC
 
 // -----------------------------------------------------------------------
 // Flat array interfaces
