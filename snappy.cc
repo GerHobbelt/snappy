@@ -30,9 +30,9 @@
 #include "snappy-internal.h"
 #include "snappy-sinksource.h"
 
-#if defined(__x86_64__) || defined(_M_X64)
-#include <emmintrin.h>
-#endif
+//#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+//#endif
 #include <stdio.h>
 
 #include <algorithm>
@@ -95,7 +95,7 @@ void UnalignedCopy64(const void* src, void* dst) {
 void UnalignedCopy128(const void* src, void* dst) {
   // TODO(alkis): Remove this when we upgrade to a recent compiler that emits
   // SSE2 moves for memcpy(dst, src, 16).
-#ifdef __SSE2__
+#ifdef sse_error
   __m128i x = _mm_loadu_si128(static_cast<const __m128i*>(src));
   _mm_storeu_si128(static_cast<__m128i*>(dst), x);
 #else
