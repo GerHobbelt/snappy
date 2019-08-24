@@ -145,6 +145,7 @@ void UnalignedCopy128(const void* src, void* dst) {
 // After IncrementalCopySlow(src, op, op_limit), the result will have eleven
 // copies of "ab"
 //    ababababababababababab
+<<<<<<< HEAD
 // Note that this does not match the semantics of either memcpy() or memmove().
 inline char* IncrementalCopySlow(const char* src, char* op,
                                  char* const op_limit) {
@@ -155,6 +156,13 @@ inline char* IncrementalCopySlow(const char* src, char* op,
 #pragma clang loop unroll(disable)
 #endif
   while (op < op_limit) {
+=======
+// Note that this does not match the semantics of either memcpy()
+// or memmove().
+static inline void IncrementalCopy(const char* src, char* op, ptrdiff_t len) {
+  assert(len > 0);
+  do {
+>>>>>>> Update-Snappy
     *op++ = *src++;
   }
   return op_limit;
@@ -307,6 +315,7 @@ inline char* IncrementalCopy(const char* src, char* op, char* const op_limit,
     return op_limit;
   }
 
+<<<<<<< HEAD
   // Fall back to doing as much as we can with the available slop in the
   // buffer. This code path is relatively cold however so we save code size by
   // avoiding unrolling and vectorizing.
@@ -317,6 +326,10 @@ inline char* IncrementalCopy(const char* src, char* op, char* const op_limit,
 #pragma clang loop unroll(disable)
 #endif
   for (char *op_end = buf_limit - 16; op < op_end; op += 16, src += 16) {
+=======
+inline void IncrementalCopyFastPath(const char* src, char* op, ptrdiff_t len) {
+  while (PREDICT_FALSE(op - src < 8)) {
+>>>>>>> Update-Snappy
     UnalignedCopy64(src, op);
     UnalignedCopy64(src + 8, op + 8);
   }
@@ -1074,6 +1087,8 @@ size_t Compress(Source* reader, Sink* writer) {
 // IOVec interfaces
 // -----------------------------------------------------------------------
 
+#ifdef HAVE_IOVEC
+
 // A type that writes to an iovec.
 // Note that this is not a "ByteSink", but a type that matches the
 // Writer template argument to SnappyDecompressor::DecompressAllTags().
@@ -1261,6 +1276,8 @@ bool RawUncompressToIOVec(Source* compressed, const struct iovec* iov,
   SnappyIOVecWriter output(iov, iov_cnt);
   return InternalUncompress(compressed, &output);
 }
+
+#endif  // HAVE_IOVEC
 
 // -----------------------------------------------------------------------
 // Flat array interfaces
