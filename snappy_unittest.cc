@@ -103,7 +103,7 @@ using DataEndingAtUnreadablePage = std::string;
 
 #endif
 
-int VerifyString(const std::string& input) {
+size_t VerifyString(const std::string& input) {
   std::string compressed;
   DataEndingAtUnreadablePage i(input);
   const size_t written = snappy::Compress(i.data(), i.size(), &compressed);
@@ -149,7 +149,7 @@ void VerifyIOVec(const std::string& input) {
   // Try uncompressing into an iovec containing a random number of entries
   // ranging from 1 to 10.
   char* buf = new char[input.size()];
-  std::minstd_rand0 rng(input.size());
+  std::minstd_rand0 rng(static_cast<std::minstd_rand0::result_type>(input.size()));
   std::uniform_int_distribution<size_t> uniform_1_to_10(1, 10);
   size_t num = uniform_1_to_10(rng);
   if (input.size() < num) {
@@ -191,11 +191,11 @@ void VerifyNonBlockedCompression(const std::string& input) {
   }
 
   std::string prefix;
-  Varint::Append32(&prefix, input.size());
+  Varint::Append32(&prefix, static_cast<uint32_t>(input.size()));
 
   // Setup compression table
   snappy::internal::WorkingMemory wmem(input.size());
-  int table_size;
+  size_t table_size;
   uint16_t* table = wmem.GetHashTable(input.size(), &table_size);
 
   // Compress entire input in one shot
@@ -224,7 +224,7 @@ void VerifyNonBlockedCompression(const std::string& input) {
   {
     static const int kNumBlocks = 10;
     struct iovec vec[kNumBlocks];
-    const int block_size = 1 + input.size() / kNumBlocks;
+    const size_t block_size = 1 + input.size() / kNumBlocks;
     std::string iovec_data(block_size * kNumBlocks, 'x');
     for (int i = 0; i < kNumBlocks; ++i) {
       vec[i].iov_base = string_as_array(&iovec_data) + i * block_size;
@@ -246,11 +246,11 @@ std::string Expand(const std::string& input) {
   return data;
 }
 
-int Verify(const std::string& input) {
+size_t Verify(const std::string& input) {
   VLOG(1) << "Verifying input of size " << input.size();
 
   // Compress using string based routines
-  const int result = VerifyString(input);
+  const size_t result = VerifyString(input);
 
   // Verify using sink based routines
   VerifyStringSink(input);
@@ -348,10 +348,10 @@ TEST(CorruptedTest, VerifyCorrupted) {
 // invokes these routines.
 void AppendLiteral(std::string* dst, const std::string& literal) {
   if (literal.empty()) return;
-  int n = literal.size() - 1;
+  size_t n = literal.size() - 1;
   if (n < 60) {
     // Fit length in tag byte
-    dst->push_back(0 | (n << 2));
+    dst->push_back(static_cast<char>(0 | (n << 2)));
   } else {
     // Encode in upcoming bytes
     char number[4];
@@ -366,10 +366,10 @@ void AppendLiteral(std::string* dst, const std::string& literal) {
   *dst += literal;
 }
 
-void AppendCopy(std::string* dst, int offset, int length) {
+void AppendCopy(std::string* dst, size_t offset, size_t length) {
   while (length > 0) {
     // Figure out how much to copy in one shot
-    int to_copy;
+    size_t to_copy;
     if (length >= 68) {
       to_copy = 64;
     } else if (length > 64) {
@@ -381,14 +381,14 @@ void AppendCopy(std::string* dst, int offset, int length) {
 
     if ((to_copy >= 4) && (to_copy < 12) && (offset < 2048)) {
       assert(to_copy-4 < 8);            // Must fit in 3 bits
-      dst->push_back(1 | ((to_copy-4) << 2) | ((offset >> 8) << 5));
-      dst->push_back(offset & 0xff);
+      dst->push_back(static_cast<char>(1 | ((to_copy-4) << 2) | ((offset >> 8) << 5)));
+      dst->push_back(static_cast<char>(offset & 0xff));
     } else if (offset < 65536) {
-      dst->push_back(2 | ((to_copy-1) << 2));
-      dst->push_back(offset & 0xff);
-      dst->push_back(offset >> 8);
+      dst->push_back(static_cast<char>(2 | ((to_copy-1) << 2)));
+      dst->push_back(static_cast<char>(offset & 0xff));
+      dst->push_back(static_cast<char>(offset >> 8));
     } else {
-      dst->push_back(3 | ((to_copy-1) << 2));
+      dst->push_back(static_cast<char>(3 | ((to_copy-1) << 2)));
       dst->push_back(offset & 0xff);
       dst->push_back((offset >> 8) & 0xff);
       dst->push_back((offset >> 16) & 0xff);
@@ -516,16 +516,16 @@ TEST(Snappy, FourByteOffset) {
   std::string fragment2 = "some other string";
 
   // How many times each fragment is emitted.
-  const int n1 = 2;
-  const int n2 = 100000 / fragment2.size();
+  const size_t n1 = 2;
+  const size_t n2 = 100000 / fragment2.size();
   const size_t length = n1 * fragment1.size() + n2 * fragment2.size();
 
   std::string compressed;
-  Varint::Append32(&compressed, length);
+  Varint::Append32(&compressed, static_cast<uint32_t>(length));
 
   AppendLiteral(&compressed, fragment1);
   std::string src = fragment1;
-  for (int i = 0; i < n2; ++i) {
+  for (size_t i = 0; i < n2; ++i) {
     AppendLiteral(&compressed, fragment2);
     src += fragment2;
   }
@@ -733,7 +733,7 @@ TEST(Snappy, ZeroOffsetCopyValidation) {
   EXPECT_FALSE(snappy::IsValidCompressedBuffer(compressed, 4));
 }
 
-int TestFindMatchLength(const char* s1, const char *s2, unsigned length) {
+size_t TestFindMatchLength(const char* s1, const char *s2, size_t length) {
   uint64_t data;
   std::pair<size_t, bool> p =
       snappy::internal::FindMatchLength(s1, s2, s2 + length, &data);

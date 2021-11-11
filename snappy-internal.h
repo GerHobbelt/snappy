@@ -33,6 +33,14 @@
 
 #include "snappy-stubs-internal.h"
 
+#ifndef __SNAPPY_API
+#ifdef _MSC_VER
+#include "snappy-dll.h"
+#else
+#define __SNAPPY_API
+#endif
+#endif
+
 #if SNAPPY_HAVE_SSSE3
 // Please do not replace with <x86intrin.h> or with headers that assume more
 // advanced SSE versions without checking with all the OWNERS.
@@ -113,7 +121,7 @@ inline V128 V128_DupChar(char c) { return vdupq_n_u8(c); }
 
 // Working memory performs a single allocation to hold all scratch space
 // required for compression.
-class WorkingMemory {
+class __SNAPPY_API WorkingMemory {
  public:
   explicit WorkingMemory(size_t input_size);
   ~WorkingMemory();
@@ -121,7 +129,7 @@ class WorkingMemory {
   // Allocates and clears a hash table using memory in "*this",
   // stores the number of buckets in "*table_size" and returns a pointer to
   // the base of the hash table.
-  uint16_t* GetHashTable(size_t fragment_size, int* table_size) const;
+  uint16_t* GetHashTable(size_t fragment_size, size_t* table_size) const;
   char* GetScratchInput() const { return input_; }
   char* GetScratchOutput() const { return output_; }
 
@@ -148,11 +156,12 @@ class WorkingMemory {
 //
 // Returns an "end" pointer into "op" buffer.
 // "end - op" is the compressed size of "input".
+__SNAPPY_API
 char* CompressFragment(const char* input,
                        size_t input_length,
                        char* op,
                        uint16_t* table,
-                       const int table_size);
+                       const size_t table_size);
 
 // Find the largest n such that
 //
