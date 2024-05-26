@@ -29,7 +29,6 @@
 #include "snappy-internal.h"
 #include "snappy-sinksource.h"
 #include "snappy.h"
-
 #if !defined(SNAPPY_HAVE_BMI2)
 // __BMI2__ is defined by GCC and Clang. Visual Studio doesn't target BMI2
 // specifically, but it does define __AVX2__ when AVX2 support is available.
@@ -636,7 +635,19 @@ static inline char* EmitLiteral(char* op, const char* literal, int len) {
     LittleEndian::Store32(op, n);
     op += count;
   }
-  std::memcpy(op, literal, len);
+  // When allow_fast_path is true, we can overwrite up to 16 bytes.
+  if (allow_fast_path) {
+    char* destination = op;
+    const char* source = literal;
+    const char* end = destination + len;
+    do {
+      std::memcpy(destination, source, 16);
+      destination += 16;
+      source += 16;
+    } while (destination < end);
+  } else {
+    std::memcpy(op, literal, len);
+  }
   return op + len;
 }
 
@@ -1073,6 +1084,18 @@ void MemCopy64(ptrdiff_t dst, const void* src, size_t size) {
   (void)size;
 }
 
+void ClearDeferred(const void** deferred_src, size_t* deferred_length,
+                   uint8_t* safe_source) {
+  *deferred_src = safe_source;
+  *deferred_length = 0;
+}
+
+void DeferMemCopy(const void** deferred_src, size_t* deferred_length,
+                  const void* src, size_t length) {
+  *deferred_src = src;
+  *deferred_length = length;
+}
+
 SNAPPY_ATTRIBUTE_ALWAYS_INLINE
 inline size_t AdvanceToNextTagARMOptimized(const uint8_t** ip_p, size_t* tag) {
   const uint8_t*& ip = *ip_p;
@@ -1177,6 +1200,12 @@ template <typename T>
 std::pair<const uint8_t*, ptrdiff_t> DecompressBranchless(
     const uint8_t* ip, const uint8_t* ip_limit, ptrdiff_t op, T op_base,
     ptrdiff_t op_limit_min_slop) {
+  // If deferred_src is invalid point it here.
+  uint8_t safe_source[64];
+  const void* deferred_src;
+  size_t deferred_length;
+  ClearDeferred(&deferred_src, &deferred_length, safe_source);
+
   // We unroll the inner loop twice so we need twice the spare room.
   op_limit_min_slop -= kSlopBytes;
   if (2 * (kSlopBytes + 1) < ip_limit - ip && op < op_limit_min_slop) {
@@ -1199,22 +1228,27 @@ std::pair<const uint8_t*, ptrdiff_t> DecompressBranchless(
       // twice reduces the amount of instructions checking limits and also
       // leads to reduced mov's.
 
-      SNAPPY_PREFETCH(ip+128);
+      SNAPPY_PREFETCH(ip + 128);
       for (int i = 0; i < 2; i++) {
         const uint8_t* old_ip = ip;
         assert(tag == ip[-1]);
         // For literals tag_type = 0, hence we will always obtain 0 from
         // ExtractLowBytes. For literals offset will thus be kLiteralOffset.
-        ptrdiff_t len_min_offset = kLengthMinusOffset[tag];
+        ptrdiff_t len_minus_offset = kLengthMinusOffset[tag];
+        uint32_t next;
 #if defined(__aarch64__)
         size_t tag_type = AdvanceToNextTagARMOptimized(&ip, &tag);
+        // We never need more than 16 bits. Doing a Load16 allows the compiler
+        // to elide the masking operation in ExtractOffset.
+        next = LittleEndian::Load16(old_ip);
 #else
         size_t tag_type = AdvanceToNextTagX86Optimized(&ip, &tag);
+        next = LittleEndian::Load32(old_ip);
 #endif
-        uint32_t next = LittleEndian::Load32(old_ip);
-        size_t len = len_min_offset & 0xFF;
-        len_min_offset -= ExtractOffset(next, tag_type);
-        if (SNAPPY_PREDICT_FALSE(len_min_offset > 0)) {
+        size_t len = len_minus_offset & 0xFF;
+        ptrdiff_t extracted = ExtractOffset(next, tag_type);
+        ptrdiff_t len_min_offset = len_minus_offset - extracted;
+        if (SNAPPY_PREDICT_FALSE(len_minus_offset > extracted)) {
           if (SNAPPY_PREDICT_FALSE(len & 0x80)) {
             // Exceptional case (long literal or copy 4).
             // Actually doing the copy here is negatively impacting the main
@@ -1226,23 +1260,29 @@ std::pair<const uint8_t*, ptrdiff_t> DecompressBranchless(
           }
           // Only copy-1 or copy-2 tags can get here.
           assert(tag_type == 1 || tag_type == 2);
-          std::ptrdiff_t delta = op + len_min_offset - len;
+          std::ptrdiff_t delta = (op + deferred_length) + len_min_offset - len;
           // Guard against copies before the buffer start.
+          // Execute any deferred MemCopy since we write to dst here.
+          MemCopy64(op_base + op, deferred_src, deferred_length);
+          op += deferred_length;
+          ClearDeferred(&deferred_src, &deferred_length, safe_source);
           if (SNAPPY_PREDICT_FALSE(delta < 0 ||
                                   !Copy64BytesWithPatternExtension(
                                       op_base + op, len - len_min_offset))) {
             goto break_loop;
           }
+          // We aren't deferring this copy so add length right away.
           op += len;
           continue;
         }
-        std::ptrdiff_t delta = op + len_min_offset - len;
+        std::ptrdiff_t delta = (op + deferred_length) + len_min_offset - len;
         if (SNAPPY_PREDICT_FALSE(delta < 0)) {
           // Due to the spurious offset in literals have this will trigger
           // at the start of a block when op is still smaller than 256.
           if (tag_type != 0) goto break_loop;
-          MemCopy64(op_base + op, old_ip, len);
-          op += len;
+          MemCopy64(op_base + op, deferred_src, deferred_length);
+          op += deferred_length;
+          DeferMemCopy(&deferred_src, &deferred_length, old_ip, len);
           continue;
         }
 
@@ -1250,13 +1290,22 @@ std::pair<const uint8_t*, ptrdiff_t> DecompressBranchless(
         // we need to copy from ip instead of from the stream.
         const void* from =
             tag_type ? reinterpret_cast<void*>(op_base + delta) : old_ip;
-        MemCopy64(op_base + op, from, len);
-        op += len;
+        MemCopy64(op_base + op, deferred_src, deferred_length);
+        op += deferred_length;
+        DeferMemCopy(&deferred_src, &deferred_length, from, len);
       }
-    } while (ip < ip_limit_min_slop && op < op_limit_min_slop);
+    } while (ip < ip_limit_min_slop &&
+             (op + deferred_length) < op_limit_min_slop);
   exit:
     ip--;
     assert(ip <= ip_limit);
+  }
+  // If we deferred a copy then we can perform.  If we are up to date then we
+  // might not have enough slop bytes and could run past the end.
+  if (deferred_length) {
+    MemCopy64(op_base + op, deferred_src, deferred_length);
+    op += deferred_length;
+    ClearDeferred(&deferred_src, &deferred_length, safe_source);
   }
   return {ip, op};
 }
